@@ -28,6 +28,12 @@ ARCHS_WITHOUT_FP16 = {
     "grl_b",
     "grl_s",
     "grl_t",
+    "gaterhat_l",
+    "gaterhat_m",
+    "gaterhat_s",
+    "gaterhat_dual_l",
+    "gaterhat_dual_m",
+    "gaterhat_dual_s",
     "hat_l",
     "hat_l_aligned",
     "hat_m",
@@ -44,6 +50,7 @@ ARCHS_WITHOUT_FP16 = {
     "seemore_t",
     "srformer_light",
     "srformer",
+    "sst_large_plus",
     "swin2sr_l",
     "swin2sr_m",
     "swin2sr_s",
@@ -122,7 +129,9 @@ REQUIRE_64_HW = {
     "swin2sr_l",
     "swin2sr_m",
     "swin2sr_s",
+    "sst_large",
 }
+REQUIRE_96_HW = {"sst_large_plus"}
 TEMPORAL_ARCHS = {"tscunet", "temporalspan", "temporalspanv2", "tfdat"}
 
 # Urban100
@@ -728,6 +737,15 @@ OFFICIAL_SETTINGS_FROMSCRATCH: dict[str, dict[str, Any]] = {
         "batch_size_per_gpu": 8,
         "accum_iter": "1  # paper: 4",
     },
+    "gaterhat_l": {
+        "milestones": [300000, 500000, 650000, 700000, 750000],
+        "total_iter": 800000,
+        "warmup_iter": -1,
+        "lr": "!!float 2e-4",
+        "lq_size": 64,
+        "batch_size_per_gpu": 4,
+        "accum_iter": "1",
+    },
     "hat_l": {
         "milestones": [300000, 500000, 650000, 700000, 750000],
         "total_iter": 800000,
@@ -1064,6 +1082,15 @@ OFFICIAL_SETTINGS_FINETUNE: dict[str, dict[str, Any]] = {
         "batch_size_per_gpu": 8,
         "accum_iter": "1  # paper: 4",
     },
+    "gaterhat_l": {
+        "milestones": [125000, 200000, 225000, 237500],
+        "total_iter": 250000,
+        "warmup_iter": -1,
+        "lr": "!!float 1e-4",
+        "lq_size": 64,
+        "batch_size_per_gpu": 4,
+        "accum_iter": "1",
+    },
     "hat_l": {
         "milestones": [125000, 200000, 225000, 237500],
         "total_iter": 250000,
@@ -1195,6 +1222,12 @@ def initialize_official_settings(settings: dict[str, dict[str, Any]]) -> None:
     settings["drct_xl"] = settings["drct_l"]
 
     settings["esrgan_lite"] = settings["esrgan"]
+
+    settings["gaterhat_m"] = settings["gaterhat_l"]
+    settings["gaterhat_s"] = settings["gaterhat_l"]
+    settings["gaterhat_dual_l"] = settings["gaterhat_l"]
+    settings["gaterhat_dual_m"] = settings["gaterhat_l"]
+    settings["gaterhat_dual_s"] = settings["gaterhat_l"]
 
     settings["hat_m"] = settings["hat_l"]
 
@@ -1411,6 +1444,22 @@ ALL_ARCHS: list[ArchInfo] = [
         "names": ["GaterV3_S", "GaterV3_R"],
         "scales": ALL_SCALES,
         "folder_name_override": "GaterV3",
+    },
+    {
+        "names": ["GaterHAT_L", "GaterHAT_M", "GaterHAT_S"],
+        "scales": ALL_SCALES,
+        "folder_name_override": "GaterHAT",
+        "extras": {
+            "use_checkpoint": "true  # Use checkpointing to significantly reduce VRAM usage, slightly reduces training speed."
+        },
+    },
+    {
+        "names": ["GaterHAT_Dual_L", "GaterHAT_Dual_M", "GaterHAT_Dual_S"],
+        "scales": ALL_SCALES,
+        "folder_name_override": "GaterHAT_Dual",
+        "extras": {
+            "use_checkpoint": "true  # Use checkpointing to significantly reduce VRAM usage, slightly reduces training speed."
+        },
     },
     {
         "names": ["DIS_Balanced", "DIS_Fast"],

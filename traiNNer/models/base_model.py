@@ -485,6 +485,8 @@ class BaseModel:
             strict (bool): Whether strictly loaded. Default: True.
         """
         crt_net = self.get_bare_model(crt_net)
+        if hasattr(crt_net, "map_state_dict"):
+            load_net = crt_net.map_state_dict(load_net)
         crt_net_state_dict = crt_net.state_dict()
         crt_net_keys = set(crt_net_state_dict.keys())
         load_net_keys = set(load_net.keys())
