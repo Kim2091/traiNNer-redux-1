@@ -164,9 +164,9 @@ class PairedVideoDataset(BaseDataset):
                 assert self.gt_size is not None
 
                 if force_x is None:
-                    force_rot90 = random.random() < 0.5
-                    force_hflip = random.random() < 0.5
-                    force_vflip = random.random() < 0.5
+                    force_rot90 = self.opt.use_rot and random.random() < 0.5
+                    force_hflip = self.opt.use_hflip and random.random() < 0.5
+                    force_vflip = self.opt.use_rot and random.random() < 0.5
                     h_lq: int = vips_img_lq.height  # pyright: ignore[reportAssignmentType]
                     w_lq: int = vips_img_lq.width  # pyright: ignore[reportAssignmentType]
                     if force_rot90:
