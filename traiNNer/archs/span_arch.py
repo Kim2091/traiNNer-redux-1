@@ -197,13 +197,18 @@ class Conv3XC(nn.Module):
         self.eval_conv.weight.data = self.weight_concat.contiguous()
         self.eval_conv.bias.data = self.bias_concat.contiguous()  # pyright: ignore[reportOptionalMemberAccess]
 
+    def train(self, mode: bool = True) -> Self:
+        super().train(mode)
+        if not mode:
+            self.update_params()
+        return self
+
     def forward(self, x: Tensor) -> Tensor:
         if self.training:
             pad = 1
             x_pad = F.pad(x, (pad, pad, pad, pad), "constant", 0)
             out = self.conv(x_pad) + self.sk(x)
         else:
-            self.update_params()
             out = self.eval_conv(x)
 
         if self.has_relu:
@@ -284,8 +289,6 @@ class SPAN(nn.Module):
         else:
             self.no_norm = None
 
-        self._reparameterized = False
-
         self.conv_1 = Conv3XC(self.in_channels, feature_channels, gain1=2, s=1)
         self.block_1 = SPAB(feature_channels, bias=bias)
         self.block_2 = SPAB(feature_channels, bias=bias)
@@ -306,41 +309,6 @@ class SPAN(nn.Module):
     @property
     def is_norm(self) -> bool:
         return self.no_norm is None
-
-    def reparameterize(self) -> None:
-        if self._reparameterized:
-            return
-
-        for name, module in list(self.named_modules()):
-            if not isinstance(module, Conv3XC):
-                continue
-
-            module.update_params()
-            conv = module.eval_conv
-
-            parts = name.split(".")
-            parent: nn.Module = self
-            for part in parts[:-1]:
-                parent = getattr(parent, part)
-
-            if module.has_relu:
-                setattr(
-                    parent, parts[-1], nn.Sequential(conv, nn.LeakyReLU(0.05, True))
-                )
-            else:
-                setattr(parent, parts[-1], conv)
-
-        self._reparameterized = True
-
-    def train(self, mode: bool = True) -> Self:
-        if mode and self._reparameterized:
-            raise RuntimeError(
-                "SPAN cannot return to training mode after reparameterization"
-            )
-        super().train(mode)
-        if not mode:
-            self.reparameterize()
-        return self
 
     def forward(self, x: Tensor) -> Tensor:
         if self.is_norm:
