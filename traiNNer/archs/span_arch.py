@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 import torch
 import torch.nn.functional as F  # noqa: N812
@@ -272,13 +272,19 @@ class SPAN(nn.Module):
         self.in_channels = num_in_ch
         self.out_channels = num_out_ch
         self.img_range = img_range
-        self.mean = torch.Tensor(rgb_mean).view(1, 3, 1, 1)
+
+        self.mean: Tensor
+        self.register_buffer(
+            "mean", torch.Tensor(rgb_mean).view(1, 3, 1, 1), persistent=False
+        )
 
         self.no_norm: torch.Tensor | None
         if not norm:
             self.register_buffer("no_norm", torch.zeros(1))
         else:
             self.no_norm = None
+
+        self._reparameterized = False
 
         self.conv_1 = Conv3XC(self.in_channels, feature_channels, gain1=2, s=1)
         self.block_1 = SPAB(feature_channels, bias=bias)
@@ -301,9 +307,43 @@ class SPAN(nn.Module):
     def is_norm(self) -> bool:
         return self.no_norm is None
 
+    def reparameterize(self) -> None:
+        if self._reparameterized:
+            return
+
+        for name, module in list(self.named_modules()):
+            if not isinstance(module, Conv3XC):
+                continue
+
+            module.update_params()
+            conv = module.eval_conv
+
+            parts = name.split(".")
+            parent: nn.Module = self
+            for part in parts[:-1]:
+                parent = getattr(parent, part)
+
+            if module.has_relu:
+                setattr(
+                    parent, parts[-1], nn.Sequential(conv, nn.LeakyReLU(0.05, True))
+                )
+            else:
+                setattr(parent, parts[-1], conv)
+
+        self._reparameterized = True
+
+    def train(self, mode: bool = True) -> Self:
+        if mode and self._reparameterized:
+            raise RuntimeError(
+                "SPAN cannot return to training mode after reparameterization"
+            )
+        super().train(mode)
+        if not mode:
+            self.reparameterize()
+        return self
+
     def forward(self, x: Tensor) -> Tensor:
         if self.is_norm:
-            self.mean = self.mean.type_as(x)
             x = (x - self.mean) * self.img_range
 
         out_feature = self.conv_1(x)
