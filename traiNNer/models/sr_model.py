@@ -779,7 +779,7 @@ class SRModel(BaseModel):
                     tmp_out, self.gt, self.opt.output_pixel_format
                 )
 
-            if self.net_g_ema is None:
+            if self.net_g_ema is None and self.is_train:
                 net.train()
 
             if self.optimizers_schedule_free and self.optimizers_schedule_free[0]:

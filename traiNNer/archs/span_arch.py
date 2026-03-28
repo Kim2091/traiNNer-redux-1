@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 import torch
 import torch.nn.functional as F  # noqa: N812
@@ -197,13 +197,18 @@ class Conv3XC(nn.Module):
         self.eval_conv.weight.data = self.weight_concat.contiguous()
         self.eval_conv.bias.data = self.bias_concat.contiguous()  # pyright: ignore[reportOptionalMemberAccess]
 
+    def train(self, mode: bool = True) -> Self:
+        super().train(mode)
+        if not mode:
+            self.update_params()
+        return self
+
     def forward(self, x: Tensor) -> Tensor:
         if self.training:
             pad = 1
             x_pad = F.pad(x, (pad, pad, pad, pad), "constant", 0)
             out = self.conv(x_pad) + self.sk(x)
         else:
-            self.update_params()
             out = self.eval_conv(x)
 
         if self.has_relu:
@@ -272,7 +277,11 @@ class SPAN(nn.Module):
         self.in_channels = num_in_ch
         self.out_channels = num_out_ch
         self.img_range = img_range
-        self.mean = torch.Tensor(rgb_mean).view(1, 3, 1, 1)
+
+        self.mean: Tensor
+        self.register_buffer(
+            "mean", torch.Tensor(rgb_mean).view(1, 3, 1, 1), persistent=False
+        )
 
         self.no_norm: torch.Tensor | None
         if not norm:
@@ -303,7 +312,6 @@ class SPAN(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         if self.is_norm:
-            self.mean = self.mean.type_as(x)
             x = (x - self.mean) * self.img_range
 
         out_feature = self.conv_1(x)
