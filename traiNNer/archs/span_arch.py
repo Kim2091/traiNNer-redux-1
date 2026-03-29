@@ -30,35 +30,6 @@ def conv_layer(
     return nn.Conv2d(in_channels, out_channels, kernel_size, padding=padding, bias=bias)
 
 
-def activation(
-    act_type: str, inplace: bool = True, neg_slope: float = 0.05, n_prelu: int = 1
-) -> nn.Module:
-    """
-    Activation functions for ['relu', 'lrelu', 'prelu'].
-    Parameters
-    ----------
-    act_type: str
-        one of ['relu', 'lrelu', 'prelu'].
-    inplace: bool
-        whether to use inplace operator.
-    neg_slope: float
-        slope of negative region for `lrelu` or `prelu`.
-    n_prelu: int
-        `num_parameters` for `prelu`.
-    ----------
-    """
-    act_type = act_type.lower()
-    if act_type == "relu":
-        layer = nn.ReLU(inplace)
-    elif act_type == "lrelu":
-        layer = nn.LeakyReLU(neg_slope, inplace)
-    elif act_type == "prelu":
-        layer = nn.PReLU(num_parameters=n_prelu, init=neg_slope)
-    else:
-        raise NotImplementedError(f"activation layer [{act_type:s}] is not found")
-    return layer
-
-
 def sequential(*args: nn.Module) -> nn.Module:
     """
     Modules will be added to the a Sequential Container in the order they
@@ -235,7 +206,6 @@ class SPAB(nn.Module):
         self.c2_r = Conv3XC(mid_channels, mid_channels, gain1=2, s=1)
         self.c3_r = Conv3XC(mid_channels, out_channels, gain1=2, s=1)
         self.act1 = torch.nn.SiLU(inplace=True)
-        self.act2 = activation("lrelu", neg_slope=0.1, inplace=True)
 
     def forward(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         out1 = self.c1_r(x)
@@ -266,6 +236,7 @@ class SPAN(nn.Module):
         num_in_ch: int,
         num_out_ch: int,
         feature_channels: int = 48,
+        num_blocks: int = 6,
         upscale: int = 4,
         bias: bool = True,
         norm: bool = True,
@@ -277,6 +248,7 @@ class SPAN(nn.Module):
         self.in_channels = num_in_ch
         self.out_channels = num_out_ch
         self.img_range = img_range
+        self.num_blocks = num_blocks
 
         self.mean: Tensor
         self.register_buffer(
@@ -290,12 +262,8 @@ class SPAN(nn.Module):
             self.no_norm = None
 
         self.conv_1 = Conv3XC(self.in_channels, feature_channels, gain1=2, s=1)
-        self.block_1 = SPAB(feature_channels, bias=bias)
-        self.block_2 = SPAB(feature_channels, bias=bias)
-        self.block_3 = SPAB(feature_channels, bias=bias)
-        self.block_4 = SPAB(feature_channels, bias=bias)
-        self.block_5 = SPAB(feature_channels, bias=bias)
-        self.block_6 = SPAB(feature_channels, bias=bias)
+        for i in range(1, num_blocks + 1):
+            setattr(self, f"block_{i}", SPAB(feature_channels, bias=bias))
 
         self.conv_cat = conv_layer(
             feature_channels * 4, feature_channels, kernel_size=1, bias=True
@@ -316,19 +284,20 @@ class SPAN(nn.Module):
 
         out_feature = self.conv_1(x)
 
-        out_b1, _, _att1 = self.block_1(out_feature)
-        out_b2, _, _att2 = self.block_2(out_b1)
-        out_b3, _, _att3 = self.block_3(out_b2)
+        out = out_feature
+        out_b1 = out_feature
+        last_mid = out_feature
 
-        out_b4, _, _att4 = self.block_4(out_b3)
-        out_b5, _, _att5 = self.block_5(out_b4)
-        out_b6, out_b5_2, _att6 = self.block_6(out_b5)
+        for i in range(1, self.num_blocks + 1):
+            block: SPAB = getattr(self, f"block_{i}")
+            out, mid, _att = block(out)
+            if i == 1:
+                out_b1 = out
+            last_mid = mid
 
-        out_b6 = self.conv_2(out_b6)
-        out = self.conv_cat(torch.cat([out_feature, out_b6, out_b1, out_b5_2], 1))
-        output = self.upsampler(out)
-
-        return output
+        out = self.conv_2(out)
+        out = self.conv_cat(torch.cat([out_feature, out, out_b1, last_mid], 1))
+        return self.upsampler(out)
 
 
 @SPANDREL_REGISTRY.register()
@@ -336,6 +305,7 @@ def span(
     num_in_ch: int = 3,
     num_out_ch: int = 3,
     feature_channels: int = 52,
+    num_blocks: int = 6,
     scale: int = 4,
     bias: bool = True,
     norm: bool = False,
@@ -347,6 +317,7 @@ def span(
         num_in_ch=num_in_ch,
         num_out_ch=num_out_ch,
         feature_channels=feature_channels,
+        num_blocks=num_blocks,
         bias=bias,
         norm=norm,
         img_range=img_range,
@@ -359,6 +330,7 @@ def span_s(
     num_in_ch: int = 3,
     num_out_ch: int = 3,
     feature_channels: int = 48,
+    num_blocks: int = 6,
     scale: int = 4,
     bias: bool = True,
     norm: bool = False,
@@ -370,6 +342,7 @@ def span_s(
         num_in_ch=num_in_ch,
         num_out_ch=num_out_ch,
         feature_channels=feature_channels,
+        num_blocks=num_blocks,
         bias=bias,
         norm=norm,
         img_range=img_range,
@@ -382,6 +355,7 @@ def span_f32(
     num_in_ch: int = 3,
     num_out_ch: int = 3,
     feature_channels: int = 32,
+    num_blocks: int = 6,
     scale: int = 4,
     bias: bool = True,
     norm: bool = False,
@@ -393,6 +367,7 @@ def span_f32(
         num_in_ch=num_in_ch,
         num_out_ch=num_out_ch,
         feature_channels=feature_channels,
+        num_blocks=num_blocks,
         bias=bias,
         norm=norm,
         img_range=img_range,
@@ -405,6 +380,7 @@ def span_f64(
     num_in_ch: int = 3,
     num_out_ch: int = 3,
     feature_channels: int = 64,
+    num_blocks: int = 6,
     scale: int = 4,
     bias: bool = True,
     norm: bool = False,
@@ -416,6 +392,7 @@ def span_f64(
         num_in_ch=num_in_ch,
         num_out_ch=num_out_ch,
         feature_channels=feature_channels,
+        num_blocks=num_blocks,
         bias=bias,
         norm=norm,
         img_range=img_range,
@@ -428,6 +405,7 @@ def span_f96(
     num_in_ch: int = 3,
     num_out_ch: int = 3,
     feature_channels: int = 96,
+    num_blocks: int = 6,
     scale: int = 4,
     bias: bool = True,
     norm: bool = False,
@@ -439,6 +417,7 @@ def span_f96(
         num_in_ch=num_in_ch,
         num_out_ch=num_out_ch,
         feature_channels=feature_channels,
+        num_blocks=num_blocks,
         bias=bias,
         norm=norm,
         img_range=img_range,

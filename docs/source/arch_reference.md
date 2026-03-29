@@ -1041,17 +1041,17 @@ upsampler: pixelshuffle
 resi_connection: 1conv
 num_feat: 64
 ```
-#### hat_l_aligned_down
+#### hat_m
 
 
 ```yaml
-type: hat_l_aligned_down
+type: hat_m
 img_size: 64
 patch_size: 1
 in_chans: 3
-embed_dim: 160
-depths: [6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6]
-num_heads: [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5]
+embed_dim: 180
+depths: [6, 6, 6, 6, 6, 6]
+num_heads: [6, 6, 6, 6, 6, 6]
 window_size: 16
 compress_ratio: 3
 squeeze_factor: 30
@@ -1071,15 +1071,15 @@ upsampler: pixelshuffle
 resi_connection: 1conv
 num_feat: 64
 ```
-#### hat_m
+#### hat_m_aligned
 
 
 ```yaml
-type: hat_m
+type: hat_m_aligned
 img_size: 64
 patch_size: 1
 in_chans: 3
-embed_dim: 180
+embed_dim: 192
 depths: [6, 6, 6, 6, 6, 6]
 num_heads: [6, 6, 6, 6, 6, 6]
 window_size: 16
@@ -1508,6 +1508,29 @@ mid_dim: 32
 unshuffle_mod: true
 rms_norm: false
 ```
+### NAFNet
+#### nafnet32
+
+
+```yaml
+type: nafnet32
+img_channel: 3
+width: 32
+enc_blk_nums: ~
+middle_blk_num: 12
+dec_blk_nums: ~
+```
+#### nafnet64
+
+
+```yaml
+type: nafnet64
+img_channel: 3
+width: 64
+enc_blk_nums: ~
+middle_blk_num: 12
+dec_blk_nums: ~
+```
 ### OmniSR
 #### omnisr
 
@@ -1810,6 +1833,7 @@ type: span
 num_in_ch: 3
 num_out_ch: 3
 feature_channels: 52
+num_blocks: 6
 bias: true
 norm: false
 img_range: 255.0
@@ -1823,6 +1847,7 @@ type: span_f32
 num_in_ch: 3
 num_out_ch: 3
 feature_channels: 32
+num_blocks: 6
 bias: true
 norm: false
 img_range: 255.0
@@ -1836,6 +1861,7 @@ type: span_f64
 num_in_ch: 3
 num_out_ch: 3
 feature_channels: 64
+num_blocks: 6
 bias: true
 norm: false
 img_range: 255.0
@@ -1849,6 +1875,7 @@ type: span_f96
 num_in_ch: 3
 num_out_ch: 3
 feature_channels: 96
+num_blocks: 6
 bias: true
 norm: false
 img_range: 255.0
@@ -1862,6 +1889,7 @@ type: span_s
 num_in_ch: 3
 num_out_ch: 3
 feature_channels: 48
+num_blocks: 6
 bias: true
 norm: false
 img_range: 255.0

@@ -18,7 +18,7 @@ def function_to_markdown(func: Callable, header: str) -> str:
         for param_name, param in sig.parameters.items():
             pd = param.default
             # print(header, param_name, pd)
-            if param_name == "scale":
+            if param_name in ("scale", "loss_weight"):
                 continue
             if isinstance(pd, tuple):
                 pd = list(pd)

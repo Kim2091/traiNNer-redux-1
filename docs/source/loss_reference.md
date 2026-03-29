@@ -113,7 +113,6 @@ loss_weight: 1.0
 
 ```yaml
 type: fftloss
-loss_weight: 1.0
 reduction: mean
 loss_weight: 1.0
 ```
@@ -122,7 +121,6 @@ loss_weight: 1.0
 
 ```yaml
 type: fliploss
-loss_weight: 1.0
 pixels_per_degree: 67.02064327658226
 loss_weight: 1.0
 ```
@@ -155,6 +153,7 @@ saturation_weight: 0.3333333333333333
 lightness_weight: 0.3333333333333333
 criterion: l1
 downscale_factor: 1
+blur_strength: 0
 loss_weight: 1.0
 ```
 ## l1loss
@@ -271,6 +270,7 @@ num_proj_fd: 256
 phase_weight_fd: 1.0
 stride_fd: 1
 clip_min: 0
+antialiased: false
 loss_weight: 1.0
 ```
 ## perceptualloss
@@ -286,6 +286,7 @@ num_proj_fd: 256
 phase_weight_fd: 1.0
 stride_fd: 1
 clip_min: 0
+antialiased: false
 loss_weight: 1.0
 ```
 ## ssimloss
@@ -293,11 +294,17 @@ loss_weight: 1.0
 
 ```yaml
 type: ssimloss
-loss_weight: 1.0
 channels: 3
 downsample: false
 test_y_channel: true
 color_space: yiq
 crop_border: 0.0
+loss_weight: 1.0
+```
+## sobeledgeloss
+
+
+```yaml
+type: sobeledgeloss
 loss_weight: 1.0
 ```
