@@ -924,16 +924,16 @@ class UpsampleOneStep(nn.Sequential):
 
 
 class BeforeRG_iLN(nn.Module):
-    """Before ResidualGroup module with i-LN (returns only normalized tensor, discards std)."""
+    """Before ResidualGroup module with affine transform (no normalization)."""
 
     def __init__(self, embed_dim):
         super().__init__()
         self.rearrange = Rearrange("b c h w -> b (h w) c")
-        self.norm = iLN(embed_dim)
+        self.norm = AffineTransform(embed_dim)
 
     def forward(self, x):
         x = self.rearrange(x)
-        x, _ = self.norm(x)  # Discard std - this is input normalization
+        x = self.norm(x)
         return x
 
 

@@ -25,7 +25,7 @@ class iLN(nn.Module):
     preserving spatial correlations between tokens.
     """
 
-    def __init__(self, normalized_shape: int, eps: float = 1e-6) -> None:
+    def __init__(self, normalized_shape: int, eps: float = 1e-4) -> None:
         super().__init__()
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(normalized_shape))

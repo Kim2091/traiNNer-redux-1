@@ -307,7 +307,7 @@ class HAB(nn.Module):
         attn_x = attn_x.view(b, h * w, c)
 
         # i-LN: rescale by std from norm1
-        x = shortcut + std1 * self.drop_path(attn_x) + conv_x * self.conv_scale
+        x = shortcut + std1 * (self.drop_path(attn_x) + conv_x * self.conv_scale)
 
         # FFN with i-LN rescaling
         x_normed, std2 = self.norm2(x)
@@ -651,7 +651,7 @@ class PatchEmbed(nn.Module):
     def forward(self, x):
         x = x.flatten(2).transpose(1, 2)
         if self.norm is not None:
-            x, _ = self.norm(x)  # iLN returns tuple
+            x = self.norm(x)
         return x
 
 
@@ -767,7 +767,7 @@ class HAT_iLN(nn.Module):
             patch_size=patch_size,
             in_chans=embed_dim,
             embed_dim=embed_dim,
-            norm_layer=norm_layer if self.patch_norm else None,
+            norm_layer=AffineTransform if self.patch_norm else None,
         )
         num_patches = self.patch_embed.num_patches
         patches_resolution = self.patch_embed.patches_resolution
@@ -778,7 +778,7 @@ class HAT_iLN(nn.Module):
             patch_size=patch_size,
             in_chans=embed_dim,
             embed_dim=embed_dim,
-            norm_layer=norm_layer if self.patch_norm else None,
+            norm_layer=AffineTransform if self.patch_norm else None,
         )
 
         if self.ape:
