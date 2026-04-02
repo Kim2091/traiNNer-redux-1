@@ -33,19 +33,18 @@ class iLN(nn.Module):
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         # x shape: (B, L, C) where L = H*W
-        b = x.shape[0]
+        orig_dtype = x.dtype
+        x_fp32 = x.float()
 
-        # Flatten spatial and channel for stats
-        x_flat = x.reshape(b, -1)  # (B, L*C)
-        mean = x_flat.mean(dim=1, keepdim=True).reshape(b, 1, 1)  # (B, 1, 1)
-        var = x_flat.var(dim=1, keepdim=True, unbiased=False).reshape(
-            b, 1, 1
-        )  # (B, 1, 1)
+        var, mean = torch.var_mean(
+            x_fp32, dim=(1, 2), keepdim=True, correction=0
+        )
         std = torch.sqrt(var + self.eps)
 
-        x_norm = (x - mean) / std
+        x_norm = (x_fp32 - mean) / std
 
-        return self.weight * x_norm + self.bias, std
+        out = (self.weight.float() * x_norm + self.bias.float()).to(orig_dtype)
+        return out, std.to(orig_dtype)
 
 
 # --------------------------------------------
