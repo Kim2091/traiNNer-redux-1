@@ -46,15 +46,21 @@ class iLN(nn.Module):
             with torch.no_grad():
                 batch_std = std.mean()
                 ema = self.std_ema
-                is_init = ema >= self.eps
-                safe_std = torch.where(
-                    is_init & (batch_std >= ema * 2.0), ema, batch_std
-                )
-                alpha = torch.where(is_init, torch.tensor(1e-3), torch.tensor(1.0))
-                self.std_ema.lerp_(safe_std, alpha)
+                # First forward: copy batch_std directly; after: EMA with spike guard
+                is_uninit = ema < self.eps
+                # When uninit, lerp with alpha=1.0 copies batch_std
+                # When init, clamp batch_std to 2x EMA to reject spikes
+                clamped_std = torch.min(batch_std, ema * 2.0)
+                # If uninit, use raw batch_std; if init, use clamped
+                target = is_uninit * batch_std + ~is_uninit * clamped_std
+                # If uninit, alpha=1 (copy); if init, alpha=1e-3 (slow EMA)
+                alpha = is_uninit + ~is_uninit * 1e-3
+                self.std_ema.lerp_(target, alpha)
 
         ema = self.std_ema.detach()
-        scale = torch.where(ema < self.eps, std, torch.min(std, ema * 2.0))
+        # When EMA is uninitialized (0), use raw std (no clamping)
+        clamped = torch.min(std, ema * 2.0)
+        scale = (ema < self.eps) * std + (ema >= self.eps) * clamped
 
         x_norm = (x - mean) / std
 
