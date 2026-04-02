@@ -22,7 +22,8 @@ class iLN(nn.Module):
     """Image Restoration Transformer Tailored Layer Normalization (i-LN).
 
     Normalizes across both spatial and channel dimensions instead of per-token,
-    preserving spatial correlations between tokens.
+    preserving spatial correlations between tokens. Uses EMA-based std clamping
+    to prevent denorm amplification instability in reduced precision training.
     """
 
     def __init__(self, normalized_shape: int, eps: float = 1e-4) -> None:
@@ -30,21 +31,35 @@ class iLN(nn.Module):
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(normalized_shape))
         self.bias = nn.Parameter(torch.zeros(normalized_shape))
+        self.register_buffer("std_ema", torch.ones(1), persistent=False)
+        self._std_ema_initialized = False
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         # x shape: (B, L, C) where L = H*W
-        orig_dtype = x.dtype
-        x_fp32 = x.float()
+        b = x.shape[0]
 
-        var, mean = torch.var_mean(
-            x_fp32, dim=(1, 2), keepdim=True, correction=0
-        )
+        x_flat = x.reshape(b, -1)
+        mean = x_flat.mean(dim=1, keepdim=True).reshape(b, 1, 1)
+        var = x_flat.var(dim=1, keepdim=True, unbiased=False).reshape(b, 1, 1)
         std = torch.sqrt(var + self.eps)
 
-        x_norm = (x_fp32 - mean) / std
+        if self.training:
+            with torch.no_grad():
+                batch_std = std.mean()
+                if not self._std_ema_initialized:
+                    self.std_ema.copy_(batch_std)
+                    self._std_ema_initialized = True
+                else:
+                    safe_std = torch.where(
+                        batch_std < 2.0 * self.std_ema, batch_std, self.std_ema
+                    )
+                    self.std_ema.lerp_(safe_std, 1e-3)
 
-        out = (self.weight.float() * x_norm + self.bias.float()).to(orig_dtype)
-        return out, std.to(orig_dtype)
+        scale = torch.min(std, 2.0 * self.std_ema.detach())
+
+        x_norm = (x - mean) / std
+
+        return self.weight * x_norm + self.bias, scale
 
 
 # --------------------------------------------
