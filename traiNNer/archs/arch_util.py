@@ -31,8 +31,7 @@ class iLN(nn.Module):
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(normalized_shape))
         self.bias = nn.Parameter(torch.zeros(normalized_shape))
-        self.register_buffer("std_ema", torch.ones(1), persistent=False)
-        self._std_ema_initialized = False
+        self.register_buffer("std_ema", torch.zeros(1), persistent=False)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         # x shape: (B, L, C) where L = H*W
@@ -46,16 +45,16 @@ class iLN(nn.Module):
         if self.training:
             with torch.no_grad():
                 batch_std = std.mean()
-                if not self._std_ema_initialized:
-                    self.std_ema.copy_(batch_std)
-                    self._std_ema_initialized = True
-                else:
-                    safe_std = torch.where(
-                        batch_std < 2.0 * self.std_ema, batch_std, self.std_ema
-                    )
-                    self.std_ema.lerp_(safe_std, 1e-3)
+                ema = self.std_ema
+                is_init = ema >= self.eps
+                safe_std = torch.where(
+                    is_init & (batch_std >= ema * 2.0), ema, batch_std
+                )
+                alpha = torch.where(is_init, torch.tensor(1e-3), torch.tensor(1.0))
+                self.std_ema.lerp_(safe_std, alpha)
 
-        scale = torch.min(std, 2.0 * self.std_ema.detach())
+        ema = self.std_ema.detach()
+        scale = torch.where(ema < self.eps, std, torch.min(std, ema * 2.0))
 
         x_norm = (x - mean) / std
 
