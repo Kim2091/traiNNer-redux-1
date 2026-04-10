@@ -22,7 +22,8 @@ class iLN(nn.Module):
     """Image Restoration Transformer Tailored Layer Normalization (i-LN).
 
     Normalizes across both spatial and channel dimensions instead of per-token,
-    preserving spatial correlations between tokens.
+    preserving spatial correlations between tokens. Uses EMA-based std clamping
+    to prevent denorm amplification instability in reduced precision training.
     """
 
     def __init__(self, normalized_shape: int, eps: float = 1e-4) -> None:
@@ -30,22 +31,40 @@ class iLN(nn.Module):
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(normalized_shape))
         self.bias = nn.Parameter(torch.zeros(normalized_shape))
+        self.register_buffer("std_ema", torch.zeros(1), persistent=False)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         # x shape: (B, L, C) where L = H*W
         b = x.shape[0]
 
-        # Flatten spatial and channel for stats
-        x_flat = x.reshape(b, -1)  # (B, L*C)
-        mean = x_flat.mean(dim=1, keepdim=True).reshape(b, 1, 1)  # (B, 1, 1)
-        var = x_flat.var(dim=1, keepdim=True, unbiased=False).reshape(
-            b, 1, 1
-        )  # (B, 1, 1)
+        x_flat = x.reshape(b, -1)
+        mean = x_flat.mean(dim=1, keepdim=True).reshape(b, 1, 1)
+        var = x_flat.var(dim=1, keepdim=True, unbiased=False).reshape(b, 1, 1)
         std = torch.sqrt(var + self.eps)
+
+        if self.training:
+            with torch.no_grad():
+                batch_std = std.mean()
+                ema = self.std_ema
+                # First forward: copy batch_std directly; after: EMA with spike guard
+                is_uninit = ema < self.eps
+                # When uninit, lerp with alpha=1.0 copies batch_std
+                # When init, clamp batch_std to 2x EMA to reject spikes
+                clamped_std = torch.min(batch_std, ema * 2.0)
+                # If uninit, use raw batch_std; if init, use clamped
+                target = is_uninit * batch_std + ~is_uninit * clamped_std
+                # If uninit, alpha=1 (copy); if init, alpha=1e-3 (slow EMA)
+                alpha = is_uninit + ~is_uninit * 1e-3
+                self.std_ema.lerp_(target, alpha)
+
+        ema = self.std_ema.detach()
+        # When EMA is uninitialized (0), use raw std (no clamping)
+        clamped = torch.min(std, ema * 2.0)
+        scale = (ema < self.eps) * std + (ema >= self.eps) * clamped
 
         x_norm = (x - mean) / std
 
-        return self.weight * x_norm + self.bias, std
+        return self.weight * x_norm + self.bias, scale
 
 
 # --------------------------------------------
