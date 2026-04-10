@@ -363,7 +363,7 @@ class BaseModel:
             if not self.optimizers_skipped[i]:
                 scheduler.step()
         # set up warm-up learning rate
-        if current_iter < warmup_iter:
+        if current_iter <= warmup_iter:
             # get initial lr for each group
             init_lr_g_l = self._get_init_lr()
             # modify warming-up learning rates
