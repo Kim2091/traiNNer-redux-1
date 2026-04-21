@@ -90,6 +90,12 @@ class DatasetOptions(StrictStruct):
             description="Path to the LR (low res) images in your training dataset. Specify one or multiple folders, separated by commas."
         ),
     ] = None
+    dataroot_hr: Annotated[
+        str | list[str] | None,
+        Meta(
+            description="Optional data root for HR reference input (used by BGCC color correction). When set, the dataset is expected to produce triplets (lq, hr_ref, gt) where gt is the CC_HR supervision target. Only the PairedCCDataset uses this field."
+        ),
+    ] = None
     meta_info: str | None = None
     filename_tmpl: Annotated[
         str,
