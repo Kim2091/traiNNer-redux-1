@@ -26,12 +26,12 @@ datasets:
   train:
     name: Train Dataset
     type: pairedccdataset
-    # Path to the LR (low res, target colors) images in your training dataset.
-    dataroot_lq: /absolute/path/to/lr_dvd  # TODO: Update to your LR dataset path
-    # Path to the HR (high res, color-incorrect structure) images in your training dataset.
-    dataroot_hr: /absolute/path/to/hr_dvd  # TODO: Update to your HR dataset path
-    # Path to the GT (ground truth, color-corrected HR) images in your training dataset.
-    dataroot_gt: /absolute/path/to/cc_hr_dvd  # TODO: Update to your CC_HR (color-corrected) dataset path
+    # LR input (e.g. DVD/LD): low-res source carrying the TARGET colors but with degradation.
+    dataroot_lq: /absolute/path/to/lr  # TODO: update to your LR (DVD/LD) dataset path
+    # HR reference input (e.g. Blu-ray): high-res source with correct structure but wrong colors.
+    dataroot_hr: /absolute/path/to/hr  # TODO: update to your HR (BD) dataset path
+    # CC_HR supervision target: the color-corrected HR produced by your manual pipeline.
+    dataroot_gt: /absolute/path/to/cc_hr  # TODO: update to your CC_HR (color-corrected HR) dataset path
 
     gt_size: 128  # During training, a square of this size is cropped from GT images. Larger is usually better but uses more VRAM.
     use_hflip: true  # Randomly flip the images horizontally.
