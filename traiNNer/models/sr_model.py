@@ -432,6 +432,11 @@ class SRModel(BaseModel):
         to pass extra inputs (e.g., BGCCModel passes self.hr as first arg)."""
         return net(lq)
 
+    def _call_loss(self, loss: nn.Module, pred: Tensor, target: Tensor) -> Tensor:
+        """Call a standard (non-GAN, non-LDL) loss. Overridable by subclasses
+        that need to inject extra kwargs (e.g., BGCCModel passes lq=self.lq)."""
+        return loss(pred, target)
+
     def feed_data(self, data: DataFeed) -> None:
         assert "lq" in data
         self.lq = data["lq"].to(
@@ -554,7 +559,7 @@ class SRModel(BaseModel):
                             )
                         l_g_loss = loss(self.output, output_ema, target)
                     else:
-                        l_g_loss = loss(self.output, target)
+                        l_g_loss = self._call_loss(loss, self.output, target)
 
                     if isinstance(l_g_loss, dict):
                         for sublabel, loss_val in l_g_loss.items():
