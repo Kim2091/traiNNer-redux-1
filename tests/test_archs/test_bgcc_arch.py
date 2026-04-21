@@ -1,3 +1,6 @@
+from pathlib import Path
+
+import pytest
 import torch
 
 
@@ -105,3 +108,84 @@ def test_bgcc_gradients_flow_end_to_end() -> None:
     # Every trainable parameter should have received a gradient.
     for name, p in model.named_parameters():
         assert p.grad is not None, f"no grad for {name}"
+
+
+def test_bgcc_onnx_export_round_trip(tmp_path: Path) -> None:
+    """Export BGCC to ONNX opset 17 and compare against PyTorch forward."""
+    import numpy as np
+
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        pytest.skip("onnxruntime not installed")
+
+    from traiNNer.archs.bgcc_arch import bgcc
+
+    model = bgcc(feat=16, d=4).eval()
+    hr = torch.randn(1, 3, 64, 64)
+    lr = torch.randn(1, 3, 32, 32)
+
+    onnx_path = tmp_path / "bgcc.onnx"
+    torch.onnx.export(
+        model,
+        (hr, lr),
+        str(onnx_path),
+        input_names=["hr", "lq"],
+        output_names=["output"],
+        dynamic_axes={
+            "hr": {0: "b", 2: "h", 3: "w"},
+            "lq": {0: "b", 2: "h", 3: "w"},
+            "output": {0: "b", 2: "h", 3: "w"},
+        },
+        opset_version=17,
+    )
+
+    with torch.no_grad():
+        torch_out = model(hr, lr).numpy()
+
+    sess = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
+    ort_out = sess.run(None, {"hr": hr.numpy(), "lq": lr.numpy()})[0]
+
+    np.testing.assert_allclose(torch_out, ort_out, rtol=1e-3, atol=1e-3)
+
+
+def test_bgcc_onnx_export_dynamic_scale_inference(tmp_path: Path) -> None:
+    """After exporting at 2x shapes, ONNX runtime should handle 3x shapes too."""
+    import numpy as np
+
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        pytest.skip("onnxruntime not installed")
+
+    from traiNNer.archs.bgcc_arch import bgcc
+
+    model = bgcc(feat=16, d=4).eval()
+    hr_export = torch.randn(1, 3, 64, 64)
+    lr_export = torch.randn(1, 3, 32, 32)
+
+    onnx_path = tmp_path / "bgcc_dyn.onnx"
+    torch.onnx.export(
+        model,
+        (hr_export, lr_export),
+        str(onnx_path),
+        input_names=["hr", "lq"],
+        output_names=["output"],
+        dynamic_axes={
+            "hr": {0: "b", 2: "h", 3: "w"},
+            "lq": {0: "b", 2: "h", 3: "w"},
+            "output": {0: "b", 2: "h", 3: "w"},
+        },
+        opset_version=17,
+    )
+
+    rng = np.random.default_rng(0)
+    sess = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
+    ort_out = sess.run(
+        None,
+        {
+            "hr": rng.standard_normal((1, 3, 72, 72)).astype(np.float32),
+            "lq": rng.standard_normal((1, 3, 24, 24)).astype(np.float32),
+        },
+    )[0]
+    assert ort_out.shape == (1, 3, 72, 72)

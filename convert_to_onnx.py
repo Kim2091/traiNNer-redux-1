@@ -249,6 +249,22 @@ def convert_and_save_onnx(
         if len(example_shape) == 5:
             axis_names.insert(1, "temporal")
 
+    network_type = (opt.network_g or {}).get("type", "").lower()
+    is_bgcc = network_type in {"bgcc", "bgcc_tiny"}
+
+    # Build HR dummy tensor for BGCC dual-input export
+    export_hr: Tensor | None = None
+    if is_bgcc and not wrap_5d:
+        n_b, c_b, h_b, w_b = export_input.shape
+        export_hr = torch.randn(
+            n_b,
+            c_b,
+            h_b * (opt.scale or 2),
+            w_b * (opt.scale or 2),
+            device=export_input.device,
+            dtype=export_input.dtype,
+        )
+
     has_dynamic = any(export_dynamic_flags)
 
     if not has_dynamic:
@@ -285,15 +301,30 @@ def convert_and_save_onnx(
         dim_specs = [
             Dim.AUTO if is_dyn else Dim.STATIC for is_dyn in export_dynamic_flags
         ]
-        dynamic_shapes = (tuple(dim_specs),)
+        per_input_dims = tuple(dim_specs)
+        if is_bgcc:
+            # HR and LQ share the same batch/channel/spatial dynamic flags
+            dynamic_shapes = (per_input_dims, per_input_dims)
+        else:
+            dynamic_shapes = (per_input_dims,)
 
-        dynamic_axes = {INPUT_NAME: {}, OUTPUT_NAME: {}}
-        for axis, is_dyn in enumerate(export_dynamic_flags):
-            if not is_dyn:
-                continue
-            name = axis_names[axis]
-            dynamic_axes[INPUT_NAME][axis] = name
-            dynamic_axes[OUTPUT_NAME][axis] = name
+        if is_bgcc:
+            dynamic_axes = {"hr": {}, "lq": {}, OUTPUT_NAME: {}}
+            for axis, is_dyn in enumerate(export_dynamic_flags):
+                if not is_dyn:
+                    continue
+                name = axis_names[axis]
+                dynamic_axes["hr"][axis] = name
+                dynamic_axes["lq"][axis] = name
+                dynamic_axes[OUTPUT_NAME][axis] = name
+        else:
+            dynamic_axes = {INPUT_NAME: {}, OUTPUT_NAME: {}}
+            for axis, is_dyn in enumerate(export_dynamic_flags):
+                if not is_dyn:
+                    continue
+                name = axis_names[axis]
+                dynamic_axes[INPUT_NAME][axis] = name
+                dynamic_axes[OUTPUT_NAME][axis] = name
 
     if is_dynamo:
         if requested_opset < MIN_DYNAMO_OPSET:
@@ -356,15 +387,22 @@ def convert_and_save_onnx(
     )
 
     with torch.inference_mode():
+        if is_bgcc and export_hr is not None:
+            export_args = (export_hr, export_input)
+            export_input_names = ["hr", "lq"]
+        else:
+            export_args = (export_input,)
+            export_input_names = [INPUT_NAME]
+
         onnx_program = torch.onnx.export(
             export_model,
-            (export_input,),
+            export_args,
             None if is_dynamo else temp_out_path,
             dynamo=is_dynamo,
             verbose=False,
             optimize=False,
             opset_version=opset,
-            input_names=[INPUT_NAME],
+            input_names=export_input_names,
             output_names=[OUTPUT_NAME],
             dynamic_shapes=dynamic_shapes,
             dynamic_axes=dynamic_axes,
