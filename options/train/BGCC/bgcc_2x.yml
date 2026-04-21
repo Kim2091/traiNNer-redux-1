@@ -44,7 +44,7 @@ datasets:
       saturation_delta: 0.10      # +/- 10% on (LR, CC_HR) — palette saturation variation
       hr_gamma_delta: 0.10        # HR gamma in [0.9, 1.1] — mastering curve variation
       hr_rgb_gain_delta: 0.05     # each HR channel x [0.95, 1.05] — white-balance drift
-      lr_chroma_bleed_sigma: 0.8  # Gaussian sigma on Cb/Cr of LR — chroma bleed severity
+      lr_chroma_subsample_factor: 4  # 4:2:0 subsampling factor on LR — chroma bleed severity
 
     num_worker_per_gpu: 8
     batch_size_per_gpu: 16  # Increasing stabilizes training but with diminishing returns. Use multiple of 8 for best performance with AMP.
@@ -107,9 +107,13 @@ train:
   # Losses - for any loss set the loss_weight to 0 to disable it.
   # https://trainner-redux.readthedocs.io/en/latest/loss_reference.html
   losses:
-    # L1 loss - primary loss for color correction
-    - type: l1loss
+    # Bleed-focal L1 loss: concentrates gradient on pixels where LR differs
+    # from CC_HR, forcing the model to learn de-bleeding instead of taking
+    # the "output = upsampled LR" shortcut.
+    - type: bleedfocall1loss
       loss_weight: 1.0
+      focal_gain: 4.0        # extra weight on bled pixels
+      focal_threshold: 0.05  # channel-mean diff threshold for bleed detection
 
 ##############################################################################################
 # Validation
