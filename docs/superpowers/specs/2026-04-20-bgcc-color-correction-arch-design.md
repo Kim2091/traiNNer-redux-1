@@ -127,25 +127,34 @@ This costs ~450 extra parameters at the first conv (3→6 input channels into 16
 - N × `FastResBlock(F)` at LR/2
 - `Conv F→F 3×3 stride=2` (downsample)
 - N × `FastResBlock(F)` at LR/4
-- (optionally further downsamples to LR/8 or LR/16)
+- `Conv F→F 3×3 stride=2` (downsample to LR/8)
+- N × `FastResBlock(F)` at LR/8
 - `Conv F → (12 × D) 1×1` — produces the bilateral grid coefficients.
 
 **Output shape:** `(B, 12, D, H', W')` where:
-- `D` = luma bin count (default 8)
-- `H' = H_lr / stride_factor`, `W' = W_lr / stride_factor`
+- `D` = bilateral bin count (default 8)
+- `H' = H_lr / 8`, `W' = W_lr / 8` (grid spatial resolution is `LR / 8`)
 - `12 = 3 × 4` coefficients per voxel (3×4 affine: `[R', G', B']ᵀ = M · [R, G, B, 1]ᵀ`)
 
-**Param target:** feature width `F = 16` or `F = 24`, N = 1 or 2 per stage. Exact tuning during implementation.
+**Grid resolution rationale:** `LR/8` gives ~4× more spatial voxels than `LR/16`, which addresses the same-luma-different-chroma failure case at close spatial proximity while costing only runtime memory (grid is encoder output, not parameters).
 
-### 4.3 HR guidance head
+**Param target:** feature width `F = 32`, N = 2 per stage. Starting point — can tune up or down during training.
 
-A tiny per-pixel network producing a scalar guidance value per HR pixel. Used to index the luma axis of the bilateral grid.
+### 4.3 HR guidance head (learned, 1-channel)
 
-Two candidate implementations (decide during implementation):
-- **Fixed**: `guidance = 0.299*R + 0.587*G + 0.114*B` (Rec.601 luma). Zero parameters.
-- **Learned**: `Conv 3→8 1×1 → PReLU → Conv 8→1 1×1 → sigmoid`. ~80 params.
+A small per-pixel network producing a **single learned guidance channel** per HR pixel. Used to index the bilateral axis of the grid.
 
-HDRNet original uses a learned 1×1 MLP with a nonlinear tone curve. For anime (mostly flat colors, well-defined luma bands), a fixed luma projection may suffice. Implementation plan will A/B both.
+```
+Conv 3→8 1×1 → PReLU → Conv 8→1 1×1 → sigmoid
+```
+
+~80 parameters.
+
+**Design note on the choice of 1-channel *learned* guidance:** earlier drafts specified a fixed 1-channel luma projection (`0.299R + 0.587G + 0.114B`). That choice pre-commits the architecture to a "color transitions align with luma transitions" inductive bias — it fails on iso-luminant color boundaries (same luma, different hue) and bakes a fixed anti-bloom shortcut into the architecture that bypasses learning.
+
+The learned 1-channel guidance removes that inductive bias. The model learns what 1D projection of RGB is most useful for indexing the stored transforms — if luma-indexing is optimal it will converge to a luma-like projection, but it can also learn chroma-weighted or hybrid projections.
+
+**Why 1-channel rather than multi-channel:** a 3-channel guidance would require a 3D bilateral grid (`D³ × spatial`), whose memory footprint explodes quickly (D=8 → 512 bins per spatial voxel). A 1-channel learned guidance keeps the grid compact (`D × spatial`) while still breaking the hard luma-bias, because the MLP that produces the guidance channel is itself learned across all three RGB inputs.
 
 **Output:** `(B, 1, H_hr, W_hr)` in [0, 1].
 
@@ -216,37 +225,48 @@ final = out + hr
 
 **Alternative to evaluate during tuning**: bias the final conv so each voxel predicts an identity 3×4 affine matrix at init, and skip the residual (`final = out` directly). Arithmetically equivalent at init (output = HR) but has different gradient dynamics. Tracked in §10 as an open question; v1 ships with the residual form above.
 
-### 4.7 Why this handles the specified requirements
+### 4.7 Why this architecture is well-suited to the problem
+
+The bilateral grid is used here as a **compact data structure for spatially-varying per-pixel transforms** — a fast way to store and retrieve transform coefficients with cheap HR-side application. It is not framed as an anti-bloom mechanism; any bloom-avoidance behavior is learned from the CC_HR supervision, not pre-committed by architecture.
 
 | Requirement | Mechanism |
 |---|---|
-| Preserve HR detail | Output is a per-pixel linear transform of HR. High-frequency structure is passed through unless the matrix actively blurs it (and nothing in training pressures it to). |
-| Transfer LR colors | The transform is predicted from LR features; gradient flows from CC_HR loss into the LR encoder. |
-| Robust to LR degradation | LR encoder runs at LR res with a large receptive field (pooled/downsampled body). Local bleed/compression averages out into coherent per-voxel transforms. |
-| De-bleed using HR structure | LR encoder takes HR_downsampled as part of its input; can learn to associate LR colors with HR's structural regions. |
-| Do not lean on HR colors | HR enters the final output ONLY through the per-pixel linear transform. The matrix coefficients are predicted from the LR branch. HR colors bias the output only if the model explicitly chooses to predict identity-like transforms in certain regions, and the CC_HR loss directly penalizes doing that in regions where colors should change. |
-| Edge-aware (no bloom) | Bilateral slicing indexes the transform by HR luma. Colors do not leak across luma-level boundaries during slicing. This is the structural anti-bloom mechanism. |
-| Scale-flexible | Architecture contains no scale-specific layers. The slicing step upsamples to whatever `H_hr, W_hr` the user provides. |
-| ONNX exportable | All ops are opset 16+ primitives. No custom CUDA. No 5D `grid_sample`. |
+| Preserve HR detail | Output is a per-pixel linear transform of HR. High-frequency structure is passed through unless the matrix actively modifies it (and the CC_HR supervision penalizes doing that where it shouldn't). |
+| Transfer LR colors | Transform coefficients are predicted from LR features; gradient flows from CC_HR loss into the LR encoder. |
+| Robust to LR degradation | LR encoder runs at LR res with a ~120-LR-pixel receptive field at the grid output. Local bleed/compression averages out across this context before being baked into per-voxel transforms. |
+| De-bleed using HR structure | LR encoder's 6-channel input (LR RGB + HR_downsampled RGB) gives the encoder access to HR's structural regions at grid-prediction time. It can learn "cyan belongs on strap, not skin" and encode that into the grid. |
+| Do not lean on HR colors | HR enters the output ONLY through the per-pixel linear transform. Transform coefficients are produced by the LR branch. The CC_HR loss actively penalizes predicting near-identity transforms in regions where color should change. |
+| Edge-awareness | *Learned, not structural.* The learned 1-ch guidance MLP chooses what 1D RGB projection to use for indexing the grid. If the data shows luma-aligned edges are the right indexing feature, it converges there; if chroma-weighted projections work better, it learns those. The model can also make the grid vary slowly across the bilateral axis if it decides edge-awareness isn't the right prior — giving it the freedom to ignore edges entirely and rely purely on spatial-position indexing. |
+| Compact representation of spatially-varying transforms | Bilateral grid at `LR/8` spatial × `D=8` bins stores `~30K voxels × 12 coeffs` for a 720×480 LR. Equivalent HR-res transform maps would be ~64× larger. The grid's compactness is what enables DIS-tier parameter counts while still representing per-pixel transforms. |
+| Scale-flexible | Architecture contains no scale-specific layers. The slicing step upsamples the grid to whatever `(H_hr, W_hr)` the user provides at inference. |
+| ONNX exportable | All ops are opset 16+ primitives (`interpolate`, `gather`, `stack`, arithmetic). No custom CUDA. No 5D `grid_sample`. |
 
 ---
 
 ## 5. Parameter Budget
 
-Rough accounting, `F = 16`, `D = 8`, 2 residual blocks per stage, 3 downsampling stages:
+Starting-point config: `F = 32`, `D = 8`, 2 residual blocks per stage, 3 downsampling stages (grid at `LR/8`).
 
-- Stem (Conv 6→16, 3×3): ~880
-- 2 × FastResBlock(16) at LR: ~9.3K
-- Downsample Conv 16→16: ~2.3K
-- 2 × FastResBlock(16): ~9.3K
-- Downsample Conv 16→16: ~2.3K
-- 2 × FastResBlock(16): ~9.3K
-- Head Conv 16 → (12 × 8) = 96 channels, 1×1: ~1.5K
-- Guidance (if learned): ~80
+Rough accounting:
 
-**Estimated total: ~35K parameters** at `F=16`. At `F=24`: ~75K. At `F=32`: ~130K.
+- Stem (Conv 6→32, 3×3): ~1.7K
+- 2 × FastResBlock(32) at LR: ~37K
+- Downsample Conv 32→32, stride 2: ~9.2K
+- 2 × FastResBlock(32) at LR/2: ~37K
+- Downsample Conv 32→32, stride 2: ~9.2K
+- 2 × FastResBlock(32) at LR/4: ~37K
+- Downsample Conv 32→32, stride 2: ~9.2K
+- 2 × FastResBlock(32) at LR/8: ~37K
+- Head Conv 32 → (12 × 8) = 96 channels, 1×1: ~3.1K
+- Guidance MLP (3→8→1): ~80
 
-Well within the DIS tier. Room to scale up if robustness to heavy degradations demands it.
+**Estimated total: ~180K parameters** at `F=32`. Squarely in DIS tier (100-400K).
+
+Variants for tuning:
+- **Tiny:** `F=16`, 3 stages only (grid at LR/4): ~45K params. Starting-size sanity check.
+- **Default (start here):** `F=32`, 4 stages (grid at LR/8): ~180K params.
+- **Wider:** `F=48`, 4 stages (grid at LR/8): ~400K params. Upper bound of DIS tier.
+- **Higher bilateral resolution:** `D=16` instead of 8: adds ~3K params (only the head conv widens), doubles grid memory footprint.
 
 ---
 
@@ -393,14 +413,21 @@ A tiny end-to-end test: 4 fake triplets, 50 iters, confirm loss decreases monoto
 
 ## 10. Open Questions / Deferred to Implementation
 
-1. **Grid resolution tuning.** `LR/8` vs `LR/16` vs fixed small (HDRNet original uses 16×16). Try two or three during tuning.
-2. **Luma bin count `D`.** 4, 8, 16. HDRNet uses 8.
-3. **Feature width `F`.** 16 / 24 / 32. Start at 16, scale up only if robustness insufficient.
-4. **Learned vs fixed guidance head.** Both cheap; A/B during tuning.
-5. **Identity-init vs residual-to-HR.** Two stability mechanisms; pick one.
-6. **Whether to include gradient-preservation auxiliary loss.** Default to no; enable if HR-detail loss is observed during initial runs.
-7. **Model wrapper: extend `SRModel` with a flag, or new `ColorCorrectionModel`.** Implementation plan decides after reading SRModel's full interface.
-8. **Dataset augmentation.** Standard hflip/rot applied identically to LR/HR/CC_HR. No degradation augmentation on LR at train time (LR already has real degradation).
+Decisions already locked after design review:
+- Grid spatial resolution: **`LR/8`** (default). Higher-res variant `LR/4` available but untuned.
+- Guidance head: **learned 1-channel** (3→8→1 MLP with sigmoid). Fixed-luma removed.
+- Starting feature width: **`F=32`**.
+- Bilateral bin count: **`D=8`**.
+- Initialization: **zero-init final conv + residual-to-HR** (not identity-init alternative).
+
+Remaining open questions:
+
+1. **Bilateral bin count `D` after first training runs.** Start at 8; if color-correction expressiveness is limited, try 16. If memory is tight at `LR/8 × D=16`, drop back.
+2. **Feature width scaling.** Start at `F=32`; scale to 48 if capacity-bound on degradation robustness.
+3. **Whether to include gradient-preservation auxiliary loss.** Default: no. Enable only if HR-detail loss is observed during initial training runs.
+4. **Model wrapper: extend `SRModel` with a flag, or new `ColorCorrectionModel`.** Decide after reading `SRModel`'s full interface during implementation.
+5. **Dataset augmentation.** Default plan: hflip/rot applied identically to LR/HR/CC_HR. No degradation augmentation on LR at train time (LR already carries real degradation).
+6. **Whether a wider bilateral feature branch helps.** Currently the final conv goes `F → 12·D = 96` channels. Adding an intermediate layer (e.g., `F → 2F → 12·D`) is cheap and might help separate grid-production from shared feature learning. Worth trying if quality stalls.
 
 ---
 
@@ -415,17 +442,17 @@ A tiny end-to-end test: 4 fake triplets, 50 iters, confirm loss decreases monoto
 
 ## 12. Summary for Review
 
-**What:** A ~35-150K parameter bilateral-guided color-correction architecture that takes HR (correct structure, wrong colors) and LR (target colors, degraded) and produces a color-corrected HR.
+**What:** A ~180K parameter (default) bilateral-guided color-correction architecture that takes HR (correct structure, wrong colors) and LR (target colors, degraded) and produces a color-corrected HR.
 
-**How:** Predict a per-pixel 3×4 affine color transform at low resolution from an LR encoder that also sees HR structure (for de-bleeding). Apply the transform at HR resolution via bilateral slicing indexed by an HR-derived guidance channel. All ops are ONNX opset 16+ compatible.
+**How:** Predict a per-pixel 3×4 affine color transform at low resolution from an LR encoder that also sees HR structure (for de-bleeding). Apply the transform at HR resolution via bilateral slicing indexed by a **learned** 1-channel guidance derived from HR. All ops are ONNX opset 16+ compatible.
 
 **Why it beats existing methods:**
-- Unlike mean+std / histogram / wavelet fix: learned, context-aware, non-blooming by construction.
+- Unlike mean+std / histogram / wavelet fix: learned, context-aware; bloom avoidance is learned from the CC_HR supervision rather than relying on a fixed low-pass-copy operation.
 - Unlike manual Photoshop+PixTransform: one-shot inference in <1s, fully consistent, no per-image training.
-- Unlike generic dual-input CNNs: LR-side transform prediction is structurally robust to LR degradation and architecturally cannot copy HR colors.
+- Unlike generic dual-input CNNs: LR-side transform prediction plus compact bilateral grid storage gives DIS-tier parameter efficiency while remaining robust to LR degradation.
 
 **Performance targets:**
-- Parameters: ~35-150K (DIS tier).
+- Parameters: ~180K default; ~45K tiny; ~400K wider. All DIS tier.
 - Inference: sub-second at 1080p HR on consumer GPU.
 - Scale: trained at 2x, supports any scale at inference.
 - ONNX: opset 16+, TensorRT / ONNX Runtime compatible.
