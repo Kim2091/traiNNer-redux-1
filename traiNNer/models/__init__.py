@@ -2,6 +2,7 @@ from copy import deepcopy
 
 from traiNNer.models.ae_model import AEModel
 from traiNNer.models.base_model import BaseModel
+from traiNNer.models.bgcc_model import BGCCModel
 from traiNNer.models.realesrgan_model import RealESRGANModel
 from traiNNer.models.realesrgan_paired_model import (
     RealESRGANPairedModel,
@@ -22,7 +23,9 @@ def build_model(opt: ReduxOptions) -> BaseModel:
     """
     opt = deepcopy(opt)
     logger = get_root_logger()
-    if opt.high_order_degradation:
+    if opt.bgcc_mode:
+        model = BGCCModel(opt)
+    elif opt.high_order_degradation:
         if opt.dataroot_lq_prob > 0:
             model = RealESRGANPairedModel(opt)
         else:

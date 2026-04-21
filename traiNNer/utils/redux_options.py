@@ -517,6 +517,12 @@ class ReduxOptions(StrictStruct):
             description="Whether or not to enable OTF (on the fly) degradations, which generates LRs on the fly."
         ),
     ] = False
+    bgcc_mode: Annotated[
+        bool,
+        Meta(
+            description="Enable BGCC dual-input color-correction model. When true, build_model uses BGCCModel regardless of other flags."
+        ),
+    ] = False
     high_order_degradations_debug: Annotated[
         bool,
         Meta(
