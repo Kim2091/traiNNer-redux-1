@@ -15,6 +15,8 @@ from traiNNer.losses.basic_loss import L1Loss
 # require their own test cases.
 EXCLUDE_ARCHS = {
     "autoencoder",
+    "bgcc",
+    "bgcc_tiny",
     "dunet",
     "eimn",
     "hat",
