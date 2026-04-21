@@ -39,12 +39,12 @@ class BGCCAugOptions(StrictStruct):
             description="Max per-channel gain perturbation on HR only. 0 disables. Each channel independently scaled by a factor from [1-delta, 1+delta]."
         ),
     ] = 0.0
-    lr_chroma_bleed_sigma: Annotated[
-        float,
+    lr_chroma_subsample_factor: Annotated[
+        int,
         Meta(
-            description="Max Gaussian sigma applied to Cb/Cr channels of LR (simulates chroma bleed). 0 disables. Sigma sampled uniformly from [0, this]."
+            description="Max factor for simulated 4:2:0 chroma subsampling on LR only (0 disables). A value of N means chroma (Cb, Cr) is downscaled by a uniformly-sampled integer factor in [1, N] via avg_pool2d, then optionally shifted by up to 1 pixel, then upsampled back with bilinear interpolation. This simulates real DVD/LD chroma bleed (edge-localized fringing) better than Gaussian blur. Typical values: 2 (mild), 3 (moderate), 4 (aggressive)."
         ),
-    ] = 0.0
+    ] = 0
 
 
 class DatasetOptions(StrictStruct):

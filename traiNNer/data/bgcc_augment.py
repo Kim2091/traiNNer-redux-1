@@ -3,6 +3,7 @@ from __future__ import annotations
 import random
 
 import torch
+import torch.nn.functional as F  # noqa: N812
 from torch import Tensor
 from torchvision.transforms import functional as TF  # noqa: N812
 
@@ -29,23 +30,37 @@ def _ycbcr_to_rgb(ycbcr: Tensor) -> Tensor:
     return torch.stack([r, g, b], dim=-3)
 
 
-def _chroma_bleed(rgb: Tensor, sigma: float) -> Tensor:
-    """Gaussian-blur Cb/Cr of an RGB image. Input (3, H, W) in [0, 1]."""
-    if sigma <= 0:
+def _chroma_subsample_simulation(
+    rgb: Tensor, factor: int, shift_dy: int, shift_dx: int
+) -> Tensor:
+    """Simulate 4:2:0-style chroma subsampling artifacts.
+
+    Converts to YCbCr, downsamples Cb/Cr by `factor` via avg_pool2d, optionally
+    rolls them by (shift_dy, shift_dx) pixels, upsamples back with bilinear,
+    and converts back to RGB. This produces edge-localized directional
+    chroma smear that matches real DVD/LD bleed patterns, unlike Gaussian blur.
+    """
+    if factor <= 1:
         return rgb
     ycbcr = _rgb_to_ycbcr(rgb)
-    # torchvision gaussian_blur expects (..., C, H, W); we blur Cb and Cr together.
+    # Cb and Cr at (2, H, W), process as a 2-channel batch of 1 item
     chroma = ycbcr[1:3].unsqueeze(0)  # (1, 2, H, W)
-    # Kernel size ~ 6 sigma, odd.
-    ks = max(3, int(2 * round(3 * sigma) + 1))
-    if ks % 2 == 0:
-        ks += 1
-    chroma_blurred = TF.gaussian_blur(
-        chroma, kernel_size=[ks, ks], sigma=[sigma, sigma]
-    )
-    ycbcr_out = torch.stack(
-        [ycbcr[0], chroma_blurred[0, 0], chroma_blurred[0, 1]], dim=0
-    )
+    h, w = chroma.shape[-2:]
+    # Need dimensions divisible by factor; if not, crop
+    h_c = (h // factor) * factor
+    w_c = (w // factor) * factor
+    if h_c == 0 or w_c == 0:
+        return rgb
+    chroma_c = chroma[..., :h_c, :w_c]
+    # Downsample then upsample
+    downs = F.avg_pool2d(chroma_c, kernel_size=factor)
+    if shift_dy != 0 or shift_dx != 0:
+        downs = torch.roll(downs, shifts=(shift_dy, shift_dx), dims=(2, 3))
+    ups = F.interpolate(downs, size=(h_c, w_c), mode="bilinear", align_corners=False)
+    # Paste back (restore full size if we cropped)
+    chroma_bled = chroma.clone()
+    chroma_bled[..., :h_c, :w_c] = ups
+    ycbcr_out = torch.stack([ycbcr[0], chroma_bled[0, 0], chroma_bled[0, 1]], dim=0)
     return _ycbcr_to_rgb(ycbcr_out).clamp(0.0, 1.0)
 
 
@@ -95,10 +110,12 @@ def apply_bgcc_augmentations(
         ).view(3, 1, 1)
         hr = (hr * gains).clamp(0.0, 1.0)
 
-    # 5. Chroma bleed on LR only
-    if opts.lr_chroma_bleed_sigma > 0:
-        sigma = random.uniform(0.0, opts.lr_chroma_bleed_sigma)
-        if sigma > 0:
-            lr = _chroma_bleed(lr, sigma)
+    # 5. Chroma subsampling simulation on LR only (realistic DVD/LD bleed)
+    if opts.lr_chroma_subsample_factor > 1:
+        factor = random.randint(2, opts.lr_chroma_subsample_factor)
+        # Optional random 1-pixel shift (50% chance) to simulate chroma misalignment
+        shift_dy = random.choice([-1, 0, 1]) if random.random() < 0.5 else 0
+        shift_dx = random.choice([-1, 0, 1]) if random.random() < 0.5 else 0
+        lr = _chroma_subsample_simulation(lr, factor, shift_dy, shift_dx)
 
     return lr, hr, cc_hr

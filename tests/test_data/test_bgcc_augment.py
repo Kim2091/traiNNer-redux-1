@@ -106,13 +106,13 @@ def test_hr_rgb_gain_is_per_channel_and_affects_hr_only() -> None:
     assert channel_means.std() > 1e-3, "RGB gain appears uniform across channels"
 
 
-def test_lr_chroma_bleed_affects_lr_only() -> None:
+def test_lr_chroma_subsample_affects_lr_only() -> None:
     from traiNNer.data.bgcc_augment import apply_bgcc_augmentations
     from traiNNer.utils.redux_options import BGCCAugOptions
 
     lr, hr, cc_hr = _make_triplet()
     random.seed(42)
-    opts = BGCCAugOptions(lr_chroma_bleed_sigma=2.0)
+    opts = BGCCAugOptions(lr_chroma_subsample_factor=4)
     out_lr, out_hr, out_cc = apply_bgcc_augmentations(
         lr.clone(), hr.clone(), cc_hr.clone(), opts
     )
@@ -132,7 +132,7 @@ def test_output_stays_in_unit_range() -> None:
         saturation_delta=0.3,
         hr_gamma_delta=0.3,
         hr_rgb_gain_delta=0.2,
-        lr_chroma_bleed_sigma=2.0,
+        lr_chroma_subsample_factor=4,
     )
     out_lr, out_hr, out_cc = apply_bgcc_augmentations(
         lr.clone(), hr.clone(), cc_hr.clone(), opts
