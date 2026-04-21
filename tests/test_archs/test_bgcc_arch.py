@@ -15,11 +15,12 @@ def test_fast_res_block_preserves_shape() -> None:
 
 
 def test_guidance_head_outputs_single_channel_in_range() -> None:
-    from traiNNer.archs.bgcc_arch import GuidanceHead
+    from traiNNer.archs.bgcc_arch import EdgeAwareGuidanceHead
 
-    head = GuidanceHead(hidden=8)
-    x = torch.randn(2, 3, 64, 64).clamp(0, 1)
-    g = head(x)
+    head = EdgeAwareGuidanceHead(hidden=8)
+    hr = torch.randn(2, 3, 64, 64).clamp(0, 1)
+    edge = torch.rand(2, 1, 64, 64)
+    g = head(hr, edge)
     assert g.shape == (2, 1, 64, 64)
     assert g.min() >= 0.0 and g.max() <= 1.0
 

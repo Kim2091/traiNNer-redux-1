@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import cast
+
 import torch
 import torch.nn.functional as F  # noqa: N812
 from torch import Tensor, nn
@@ -22,28 +24,52 @@ class FastResBlock(nn.Module):
         return x + y
 
 
-class GuidanceHead(nn.Module):
-    """Tiny per-pixel MLP on HR RGB producing a learned 1-channel guidance in [0, 1].
-
-    Structure: Conv 3->H 1x1 -> PReLU -> Conv H->1 1x1 -> sigmoid.
-    Removes the fixed-luma inductive bias; model learns what projection of RGB
-    best indexes the bilateral grid.
-    """
+class EdgeAwareGuidanceHead(nn.Module):
+    """Predict a 1-channel bilateral guidance map from HR RGB and local edges."""
 
     def __init__(self, hidden: int = 8) -> None:
         super().__init__()
-        self.conv1 = nn.Conv2d(3, hidden, 1, bias=True)
+        self.conv1 = nn.Conv2d(4, hidden, 3, padding=1, bias=True)
         self.act = nn.PReLU(hidden)
-        self.conv2 = nn.Conv2d(hidden, 1, 1, bias=True)
+        self.conv2 = nn.Conv2d(hidden, hidden, 3, padding=1, bias=True)
+        self.conv3 = nn.Conv2d(hidden, 1, 1, bias=True)
 
-    def forward(self, hr: Tensor) -> Tensor:
-        y = self.act(self.conv1(hr))
-        y = self.conv2(y)
+    def forward(self, hr: Tensor, edge: Tensor) -> Tensor:
+        y = torch.cat([hr, edge], dim=1)
+        y = self.act(self.conv1(y))
+        y = self.act(self.conv2(y))
+        y = self.conv3(y)
         return torch.sigmoid(y)
 
 
+class HRRefineHead(nn.Module):
+    """Predict a sharp HR residual after coarse bilateral color transfer."""
+
+    def __init__(self, feat: int, n_blocks: int) -> None:
+        super().__init__()
+        self.conv_in = nn.Conv2d(8, feat, 3, padding=1, bias=True)
+        self.act = nn.PReLU(feat)
+        self.body = nn.Sequential(*[FastResBlock(feat) for _ in range(n_blocks)])
+        self.conv_out = nn.Conv2d(feat, 3, 3, padding=1, bias=True)
+
+        nn.init.zeros_(self.conv_out.weight)
+        if self.conv_out.bias is not None:
+            nn.init.zeros_(self.conv_out.bias)
+
+    def forward(
+        self, coarse: Tensor, hr: Tensor, guidance: Tensor, edge: Tensor
+    ) -> Tensor:
+        x = torch.cat([coarse, hr, guidance, edge], dim=1)
+        x = self.act(self.conv_in(x))
+        x = self.body(x)
+        return self.conv_out(x)
+
+
 class BilateralSlicer(nn.Module):
-    """Manual trilinear slicing of a bilateral grid, ONNX-opset-16 friendly.
+    """Manual trilinear slice of a bilateral grid.
+
+    Bilinear spatial upsample + linear bin interp via gather, so we stay within
+    ONNX opset 16 (avoids 5D grid_sample).
 
     Inputs:
         grid: (B, C=12, D, H', W') of transform coefficients.
@@ -51,38 +77,27 @@ class BilateralSlicer(nn.Module):
 
     Output:
         M: (B, 12, H_hr, W_hr) — per-HR-pixel transform coefficients.
-
-    Algorithm:
-        1. Spatially upsample every D-bin slice of the grid to HR resolution
-           using bilinear interpolate (done as one interpolate call via reshape).
-        2. Compute bin_lo, bin_hi from guidance * (D - 1) with floor + clamp.
-        3. Gather the two adjacent bins per HR pixel and linearly interpolate
-           by the fractional guidance weight.
     """
 
     def forward(self, grid: Tensor, guidance: Tensor) -> Tensor:
         b, c, d, h_grid, w_grid = grid.shape
         _, _, h_hr, w_hr = guidance.shape
 
-        # Spatial upsample all D bins at once.
-        # Reshape (B, C, D, H', W') -> (B, C*D, H', W') for a single interpolate call.
+        # Fold D into channels so a single interpolate handles all bins.
         grid_flat = grid.reshape(b, c * d, h_grid, w_grid)
         grid_up = F.interpolate(
             grid_flat, size=(h_hr, w_hr), mode="bilinear", align_corners=False
         )
-        # (B, C, D, H_hr, W_hr)
         grid_up = grid_up.reshape(b, c, d, h_hr, w_hr)
 
-        # Map guidance to continuous bin coordinate in [0, D-1].
         bin_f = guidance.squeeze(1) * (d - 1)  # (B, H_hr, W_hr)
         bin_lo = bin_f.floor().clamp(0, d - 1).long()
         bin_hi = (bin_lo + 1).clamp(max=d - 1)
         w_hi = (bin_f - bin_lo.float()).unsqueeze(1)  # (B, 1, H_hr, W_hr)
         w_lo = 1.0 - w_hi
 
-        # Gather along bin axis.
-        # idx shape must match grid_up except on the gather axis:
-        # grid_up is (B, C, D, H_hr, W_hr); idx must be (B, C, 1, H_hr, W_hr).
+        # idx must broadcast to grid_up's shape except along the gather axis:
+        # grid_up is (B, C, D, H_hr, W_hr), so idx must be (B, C, 1, H_hr, W_hr).
         idx_lo = bin_lo.unsqueeze(1).unsqueeze(1).expand(b, c, 1, h_hr, w_hr)
         idx_hi = bin_hi.unsqueeze(1).unsqueeze(1).expand(b, c, 1, h_hr, w_hr)
         m_lo = torch.gather(grid_up, 2, idx_lo).squeeze(2)  # (B, C, H_hr, W_hr)
@@ -102,6 +117,7 @@ class BGCC(nn.Module):
         d: Bilateral bin count (default 8).
         n_blocks_per_stage: Number of FastResBlocks at each encoder stage (default 2).
         guidance_hidden: Hidden width of the guidance MLP (default 8).
+        refine_blocks: Number of FastResBlocks in the HR refinement head.
     """
 
     def __init__(
@@ -110,9 +126,9 @@ class BGCC(nn.Module):
         d: int = 8,
         n_blocks_per_stage: int = 2,
         guidance_hidden: int = 8,
+        refine_blocks: int = 2,
     ) -> None:
         super().__init__()
-        self.feat = feat
         self.d = d
         self.coeffs_per_voxel = 12  # 3 output channels * 4 input components (RGB+1)
 
@@ -136,7 +152,19 @@ class BGCC(nn.Module):
             *[FastResBlock(feat) for _ in range(n_blocks_per_stage)]
         )
 
-        # Grid head: produces (12 * D) channels at LR/8 spatial resolution.
+        # Fuse multiscale encoder features back to LR resolution before predicting
+        # the bilateral grid so coefficients can change at every LR pixel.
+        self.grid_proj0 = nn.Conv2d(feat, feat, 1, bias=False)
+        self.grid_proj1 = nn.Conv2d(feat, feat, 1, bias=False)
+        self.grid_proj2 = nn.Conv2d(feat, feat, 1, bias=False)
+        self.grid_proj3 = nn.Conv2d(feat, feat, 1, bias=False)
+        self.grid_fusion = nn.Sequential(
+            nn.Conv2d(feat * 4, feat, 3, padding=1, bias=True),
+            nn.PReLU(feat),
+            FastResBlock(feat),
+            nn.Conv2d(feat, feat, 3, padding=1, bias=True),
+            nn.PReLU(feat),
+        )
         self.grid_head = nn.Conv2d(feat, self.coeffs_per_voxel * d, 1, bias=True)
 
         # Zero-init the grid head so output = HR + 0 at init.
@@ -144,8 +172,30 @@ class BGCC(nn.Module):
         if self.grid_head.bias is not None:
             nn.init.zeros_(self.grid_head.bias)
 
-        self.guidance = GuidanceHead(hidden=guidance_hidden)
+        self.guidance = EdgeAwareGuidanceHead(hidden=guidance_hidden)
         self.slicer = BilateralSlicer()
+        self.refine = HRRefineHead(feat=feat, n_blocks=refine_blocks)
+
+        sobel_x = torch.tensor(
+            [[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]],
+            dtype=torch.float32,
+        ).view(1, 1, 3, 3)
+        sobel_y = torch.tensor(
+            [[-1.0, -2.0, -1.0], [0.0, 0.0, 0.0], [1.0, 2.0, 1.0]],
+            dtype=torch.float32,
+        ).view(1, 1, 3, 3)
+        self.register_buffer("sobel_x", sobel_x, persistent=False)
+        self.register_buffer("sobel_y", sobel_y, persistent=False)
+
+    def _edge_map(self, hr: Tensor) -> Tensor:
+        # register_buffer returns Tensor | Module to pyright; cast for the conv call.
+        sobel_x = cast(Tensor, self.sobel_x)
+        sobel_y = cast(Tensor, self.sobel_y)
+        luma = 0.299 * hr[:, 0:1] + 0.587 * hr[:, 1:2] + 0.114 * hr[:, 2:3]
+        grad_x = F.conv2d(luma, sobel_x, padding=1)
+        grad_y = F.conv2d(luma, sobel_y, padding=1)
+        edge = torch.sqrt(grad_x.square() + grad_y.square() + 1e-6)
+        return edge / (edge.amax(dim=(2, 3), keepdim=True) + 1e-6)
 
     def forward(self, hr: Tensor, lr: Tensor) -> Tensor:
         b, _, h_hr, w_hr = hr.shape
@@ -157,34 +207,51 @@ class BGCC(nn.Module):
         )
         x = torch.cat([lr, hr_ds], dim=1)  # (B, 6, H_lr, W_lr)
 
-        # Encoder
         x = self.stem_act(self.stem(x))
-        x = self.stage0(x)
-        x = self.stage1(self.down1(x))
-        x = self.stage2(self.down2(x))
-        x = self.stage3(self.down3(x))
+        x0 = self.stage0(x)
+        x1 = self.stage1(self.down1(x0))
+        x2 = self.stage2(self.down2(x1))
+        x3 = self.stage3(self.down3(x2))
 
-        # Predict the bilateral grid: (B, 12*D, H_lr/8, W_lr/8)
-        grid_flat = self.grid_head(x)
-        # Reshape to (B, 12, D, H', W')
+        projs = (
+            self.grid_proj0(x0),
+            self.grid_proj1(x1),
+            self.grid_proj2(x2),
+            self.grid_proj3(x3),
+        )
+        grid_feat = torch.cat(
+            [
+                p
+                if p.shape[-2:] == (h_lr, w_lr)
+                else F.interpolate(
+                    p, size=(h_lr, w_lr), mode="bilinear", align_corners=False
+                )
+                for p in projs
+            ],
+            dim=1,
+        )
+        grid_feat = self.grid_fusion(grid_feat)
+
+        grid_flat = self.grid_head(grid_feat)
         grid = grid_flat.reshape(
             b, self.coeffs_per_voxel, self.d, *grid_flat.shape[-2:]
         )
 
-        # Learned 1-ch guidance from HR
-        guidance = self.guidance(hr)  # (B, 1, H_hr, W_hr)
+        edge = self._edge_map(hr)
+        guidance = self.guidance(hr, edge)  # (B, 1, H_hr, W_hr)
 
-        # Slice: per-HR-pixel 3x4 affine matrix coefficients.
         m = self.slicer(grid, guidance)  # (B, 12, H_hr, W_hr)
 
-        # Apply per-pixel affine to HR.
-        # M reshaped to (B, 3, 4, H_hr, W_hr); [R,G,B,1] to (B, 4, H_hr, W_hr).
+        # Reshape M to (B, 3, 4, H, W) and pad HR with 1s to (B, 4, H, W) so the
+        # per-pixel 3x4 affine applies as a pointwise multiply + sum along inputs.
         m = m.view(b, 3, 4, h_hr, w_hr)
-        hr_aug = torch.cat([hr, torch.ones_like(hr[:, :1])], dim=1)  # (B, 4, H, W)
-        out = (m * hr_aug.unsqueeze(1)).sum(dim=2)  # (B, 3, H_hr, W_hr)
+        hr_aug = torch.cat([hr, torch.ones_like(hr[:, :1])], dim=1)
+        out = (m * hr_aug.unsqueeze(1)).sum(dim=2)
 
         # Residual against HR for init stability (grid_head is zero-init -> out starts 0).
-        return out + hr
+        coarse = out + hr
+        refine = self.refine(coarse, hr, guidance, edge)
+        return coarse + refine
 
 
 @ARCH_REGISTRY.register()
@@ -194,6 +261,7 @@ def bgcc(
     d: int = 8,
     n_blocks_per_stage: int = 2,
     guidance_hidden: int = 8,
+    refine_blocks: int = 2,
     scale: int = 2,  # accepted for framework compatibility; not used architecturally
 ) -> BGCC:
     return BGCC(
@@ -201,6 +269,7 @@ def bgcc(
         d=d,
         n_blocks_per_stage=n_blocks_per_stage,
         guidance_hidden=guidance_hidden,
+        refine_blocks=refine_blocks,
     )
 
 
@@ -211,6 +280,7 @@ def bgcc_tiny(
     d: int = 8,
     n_blocks_per_stage: int = 1,
     guidance_hidden: int = 8,
+    refine_blocks: int = 1,
     scale: int = 2,  # accepted for framework compatibility; not used architecturally
 ) -> BGCC:
     return BGCC(
@@ -218,4 +288,5 @@ def bgcc_tiny(
         d=d,
         n_blocks_per_stage=n_blocks_per_stage,
         guidance_hidden=guidance_hidden,
+        refine_blocks=refine_blocks,
     )
