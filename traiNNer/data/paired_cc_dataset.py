@@ -128,6 +128,14 @@ class PairedCCDataset(BaseDataset):
         hr_t = img2tensor(img_hr, float32=True, from_bgr=False)
         gt_t = img2tensor(img_gt, float32=True, from_bgr=False)
 
+        # Training augmentations (BGCC-specific, invariant-respecting)
+        if self.opt.phase == "train" and self.opt.bgcc_aug is not None:
+            from traiNNer.data.bgcc_augment import apply_bgcc_augmentations
+
+            lq_t, hr_t, gt_t = apply_bgcc_augmentations(
+                lq_t, hr_t, gt_t, self.opt.bgcc_aug
+            )
+
         if self.mean is not None and self.std is not None:
             from torchvision.transforms.functional import normalize
 
