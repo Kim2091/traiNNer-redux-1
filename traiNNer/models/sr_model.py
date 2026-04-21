@@ -614,7 +614,7 @@ class SRModel(BaseModel):
                     self.optimizer_g.zero_grad()
             else:
                 with torch.inference_mode():
-                    self.output = self.net_g(self.lq)
+                    self.output = self._run_net(self.net_g, self.lq)
                     assert isinstance(self.output, Tensor)
 
         cri_gan = self.losses.get("l_g_gan")
