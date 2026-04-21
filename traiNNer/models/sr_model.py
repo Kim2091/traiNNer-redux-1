@@ -427,6 +427,11 @@ class SRModel(BaseModel):
                 "SCHEDULEFREE" in train_opt.optim_d["type"].upper()
             )
 
+    def _run_net(self, net: nn.Module, lq: Tensor) -> Tensor:
+        """Single forward-call point. Overridable by subclasses that need
+        to pass extra inputs (e.g., BGCCModel passes self.hr as first arg)."""
+        return net(lq)
+
     def feed_data(self, data: DataFeed) -> None:
         assert "lq" in data
         self.lq = data["lq"].to(
@@ -479,7 +484,7 @@ class SRModel(BaseModel):
             device_type=self.device.type, dtype=self.amp_dtype, enabled=self.use_amp
         ):
             if self.optimizer_g is not None:
-                output = self.net_g(lq)  # output: output_pixel_format
+                output = self._run_net(self.net_g, lq)  # output: output_pixel_format
                 self.output = pixelformat2rgb_pt(
                     output, self.gt, self.opt.output_pixel_format
                 )  # self.output: rgb
@@ -774,7 +779,7 @@ class SRModel(BaseModel):
                 if self.opt.val.tile_size > 0:
                     tmp_out = self.infer_tiled(net, lq)
                 else:
-                    tmp_out = net(lq)
+                    tmp_out = self._run_net(net, lq)
                 self.output = pixelformat2rgb_pt(
                     tmp_out, self.gt, self.opt.output_pixel_format
                 )
