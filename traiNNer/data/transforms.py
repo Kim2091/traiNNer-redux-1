@@ -8,7 +8,6 @@ from torch import Tensor
 
 from traiNNer.utils.img_util import img2rgb
 
-
 VIPS_FORMAT_TO_DTYPE: dict[str, np.dtype] = {
     "uchar": np.uint8,
     "char": np.int8,
@@ -20,9 +19,12 @@ VIPS_FORMAT_TO_DTYPE: dict[str, np.dtype] = {
     "double": np.float64,
 }
 
+
 def get_vips_dtype(img: pyvips.Image) -> np.dtype:
     if img.format not in VIPS_FORMAT_TO_DTYPE:
-        raise ValueError(f"Unsupported VIPS format: {img.format}. Supported formats: {list(VIPS_FORMAT_TO_DTYPE.keys())}")
+        raise ValueError(
+            f"Unsupported VIPS format: {img.format}. Supported formats: {list(VIPS_FORMAT_TO_DTYPE.keys())}"
+        )
     return VIPS_FORMAT_TO_DTYPE[img.format]
 
 
@@ -426,6 +428,83 @@ def augment_vips_pair(
     return augment_vips(imgs[0], hflip, vflip, rot90, randomize=False), augment_vips(
         imgs[1], hflip, vflip, rot90, randomize=False
     )
+
+
+def paired_random_crop_triplet_vips(
+    img_hr_ref: pyvips.Image,
+    img_cc_hr: pyvips.Image,
+    img_lq: pyvips.Image,
+    gt_patch_size: int,
+    scale: int,
+    x: int | None = None,
+    y: int | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Triplet-aligned random crop for BGCC training.
+
+    HR reference and CC_HR target are both at HR resolution; LQ is at LR.
+    All three crops come from the same spatial location (scaled appropriately).
+
+    Returns (hr_ref_np, cc_hr_np, lq_np) as HWC numpy arrays.
+    """
+    h_lq, w_lq = img_lq.height, img_lq.width
+    lq_patch = gt_patch_size // scale
+
+    if x is None:
+        x = random.randint(0, max(w_lq - lq_patch, 0))
+    if y is None:
+        y = random.randint(0, max(h_lq - lq_patch, 0))
+
+    lq_crop = img_lq.crop(x, y, lq_patch, lq_patch)
+    hr_x, hr_y = x * scale, y * scale
+    hr_ref_crop = img_hr_ref.crop(hr_x, hr_y, gt_patch_size, gt_patch_size)
+    cc_hr_crop = img_cc_hr.crop(hr_x, hr_y, gt_patch_size, gt_patch_size)
+
+    return hr_ref_crop.numpy(), cc_hr_crop.numpy(), lq_crop.numpy()
+
+
+def augment_vips_triplet(
+    imgs: tuple[pyvips.Image, pyvips.Image, pyvips.Image],
+    hflip: bool = True,
+    vflip: bool = True,
+    rot90: bool = True,
+    force_hflip: bool | None = None,
+    force_vflip: bool | None = None,
+    force_rot90: bool | None = None,
+) -> tuple[pyvips.Image, pyvips.Image, pyvips.Image]:
+    """Apply the same random flip/rotation to all three images.
+
+    Thin wrapper — draws flip/rot decisions once, forwards them to
+    augment_vips_pair twice to keep all three images consistent.
+    """
+    do_hflip = (
+        force_hflip if force_hflip is not None else (hflip and random.random() < 0.5)
+    )
+    do_vflip = (
+        force_vflip if force_vflip is not None else (vflip and random.random() < 0.5)
+    )
+    do_rot90 = (
+        force_rot90 if force_rot90 is not None else (rot90 and random.random() < 0.5)
+    )
+
+    a, b = augment_vips_pair(
+        (imgs[0], imgs[1]),
+        hflip=hflip,
+        vflip=vflip,
+        rot90=rot90,
+        force_hflip=do_hflip,
+        force_vflip=do_vflip,
+        force_rot90=do_rot90,
+    )
+    _, c = augment_vips_pair(
+        (imgs[0], imgs[2]),
+        hflip=hflip,
+        vflip=vflip,
+        rot90=rot90,
+        force_hflip=do_hflip,
+        force_vflip=do_vflip,
+        force_rot90=do_rot90,
+    )
+    return a, b, c
 
 
 def img_rotate(
