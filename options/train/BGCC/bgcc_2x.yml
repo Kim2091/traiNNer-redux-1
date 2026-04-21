@@ -37,6 +37,15 @@ datasets:
     use_hflip: true  # Randomly flip the images horizontally.
     use_rot: true  # Randomly rotate the images.
 
+    # BGCC training augmentations. All defaults 0 (disabled). Tuned values below
+    # are conservative starting points for a small (4-show) dataset.
+    bgcc_aug:
+      hue_shift_deg: 5.0          # +/- degrees on (LR, CC_HR) — diversifies target palette
+      saturation_delta: 0.10      # +/- 10% on (LR, CC_HR) — palette saturation variation
+      hr_gamma_delta: 0.10        # HR gamma in [0.9, 1.1] — mastering curve variation
+      hr_rgb_gain_delta: 0.05     # each HR channel x [0.95, 1.05] — white-balance drift
+      lr_chroma_bleed_sigma: 0.8  # Gaussian sigma on Cb/Cr of LR — chroma bleed severity
+
     num_worker_per_gpu: 8
     batch_size_per_gpu: 16  # Increasing stabilizes training but with diminishing returns. Use multiple of 8 for best performance with AMP.
     accum_iter: 1  # Using values larger than 1 simulates higher batch size by trading performance for reduced VRAM usage.
