@@ -14,6 +14,39 @@ class WandbOptions(StrictStruct):
     project: str | None = None
 
 
+class BGCCAugOptions(StrictStruct):
+    hue_shift_deg: Annotated[
+        float,
+        Meta(
+            description="Max absolute hue shift in degrees applied identically to LR and CC_HR. 0 disables."
+        ),
+    ] = 0.0
+    saturation_delta: Annotated[
+        float,
+        Meta(
+            description="Max fractional saturation scale applied identically to LR and CC_HR. 0 disables. Factor sampled from [1-delta, 1+delta]."
+        ),
+    ] = 0.0
+    hr_gamma_delta: Annotated[
+        float,
+        Meta(
+            description="Max fractional gamma perturbation on HR only. 0 disables. Gamma sampled from [1-delta, 1+delta]."
+        ),
+    ] = 0.0
+    hr_rgb_gain_delta: Annotated[
+        float,
+        Meta(
+            description="Max per-channel gain perturbation on HR only. 0 disables. Each channel independently scaled by a factor from [1-delta, 1+delta]."
+        ),
+    ] = 0.0
+    lr_chroma_bleed_sigma: Annotated[
+        float,
+        Meta(
+            description="Max Gaussian sigma applied to Cb/Cr channels of LR (simulates chroma bleed). 0 disables. Sigma sampled uniformly from [0, this]."
+        ),
+    ] = 0.0
+
+
 class DatasetOptions(StrictStruct):
     name: Annotated[
         str,
@@ -96,6 +129,7 @@ class DatasetOptions(StrictStruct):
             description="Optional data root for HR reference input (used by BGCC color correction). When set, the dataset is expected to produce triplets (lq, hr_ref, gt) where gt is the CC_HR supervision target. Only the PairedCCDataset uses this field."
         ),
     ] = None
+    bgcc_aug: BGCCAugOptions | None = None
     meta_info: str | None = None
     filename_tmpl: Annotated[
         str,
