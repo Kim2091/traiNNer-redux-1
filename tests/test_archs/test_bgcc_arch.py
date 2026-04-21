@@ -57,3 +57,51 @@ def test_bilateral_slicer_interpolates_between_bins() -> None:
     guidance = torch.full((1, 1, 8, 8), 0.5)  # guidance * (D-1) = 0.5, midpoint
     m = slicer(grid, guidance)
     assert torch.allclose(m, torch.full_like(m, 2.0), atol=1e-5)
+
+
+def test_bgcc_forward_shape_2x() -> None:
+    from traiNNer.archs.bgcc_arch import bgcc
+
+    model = bgcc(feat=32, d=8)
+    hr = torch.randn(2, 3, 128, 128)
+    lr = torch.randn(2, 3, 64, 64)
+    out = model(hr, lr)
+    assert out.shape == hr.shape
+
+
+def test_bgcc_forward_shape_flexible_scale() -> None:
+    """Model trained at 2x should still run at 3x at inference without code changes."""
+    from traiNNer.archs.bgcc_arch import bgcc
+
+    model = bgcc(feat=32, d=8)
+    hr = torch.randn(1, 3, 192, 192)
+    lr = torch.randn(1, 3, 64, 64)
+    out = model(hr, lr)
+    assert out.shape == hr.shape
+
+
+def test_bgcc_initial_output_matches_hr_within_tolerance() -> None:
+    """Zero-init + residual => output should equal hr at init (zero training)."""
+    from traiNNer.archs.bgcc_arch import bgcc
+
+    model = bgcc(feat=32, d=8).eval()
+    hr = torch.randn(1, 3, 64, 64)
+    lr = torch.randn(1, 3, 32, 32)
+    with torch.no_grad():
+        out = model(hr, lr)
+    assert torch.allclose(out, hr, atol=1e-5)
+
+
+def test_bgcc_gradients_flow_end_to_end() -> None:
+    from traiNNer.archs.bgcc_arch import bgcc
+
+    model = bgcc(feat=16, d=4)
+    hr = torch.randn(1, 3, 64, 64, requires_grad=False)
+    lr = torch.randn(1, 3, 32, 32, requires_grad=False)
+    target = torch.randn(1, 3, 64, 64)
+    out = model(hr, lr)
+    loss = (out - target).abs().mean()
+    loss.backward()
+    # Every trainable parameter should have received a gradient.
+    for name, p in model.named_parameters():
+        assert p.grad is not None, f"no grad for {name}"
