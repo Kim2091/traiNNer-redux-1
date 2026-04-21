@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F  # noqa: N812
 from torch import Tensor, nn
 
-from traiNNer.utils.registry import ARCH_REGISTRY, SPANDREL_REGISTRY
+from traiNNer.utils.registry import ARCH_REGISTRY, SPANDREL_REGISTRY  # noqa: F401
 
 
 class FastResBlock(nn.Module):
